@@ -1,0 +1,877 @@
+---
+title: "R4GIS Notebook"
+output:
+  html_document:
+    df_print: paged
+date: "`r Sys.time()`"
+---
+
+# About
+This R notebook is intended to be the R code of the course Automating GIS-processes (https://autogis-site.readthedocs.io/en/latest/index.html). The data are available in the web site of the course.
+The learning objectives of the course are:
+
+* read / write spatial data from/to different file formats
+* work with coordinate reference systems
+* geocode data from addresses to coordinates and vice versa
+* apply geometric operations (intersect, union)
+* reclassify data based on conditions
+* apply spatial queries
+* conduct simple spatial analyses
+* Visualize data and create (interactive) maps
+```{r libraries, message=FALSE, warning=FALSE, echo=FALSE}
+suppressWarnings(suppressPackageStartupMessages(library(tidyverse)))
+suppressPackageStartupMessages(library(sf))
+suppressPackageStartupMessages(library(tmap))
+suppressPackageStartupMessages(library(httr))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(ows4R))
+#suppressPackageStartupMessages(library(arcgisbinding))
+```
+# 0. environment set up
+Install required packages
+```{r}
+libs <- c("sf", "tmap", "sp", "spdep", "DCluster", "cartogram")
+for (x in libs){                      #cycle through each item in libs object
+  if(x %in% rownames(installed.packages()) == FALSE) {  #if the package is not installed
+    print(paste0("installing ", x, "...")) #print a message to tell me
+    install.packages(x)                 #and then install the packages
+  }
+  else{                                     #otherwise (if it is installed)
+    print (paste0(x, " is already installed "))     #print a message to tell me
+  }
+ 
+  library(x, character.only = TRUE)               #and then load the packages
+ 
+}
+
+```
+ 
+
+# Lesson 1: Spatial data model
+ 
+**Learning goals:** Create and manipulate Geometric objects
+ 
+* Points, Linestring and Polygon in R
+ 
+
+```{r}
+point1 <- sf::st_point(x = c(2.2,4.2),dim = "XY")
+point2 <- sf::st_point(x = c(7.2, -25.1),dim = "XY")
+point3 <- sf::st_point(x = c(9.26, -2.456),dim = "XY")
+point3D <- sf::st_point(x = c(9.26, -2.456, 0.57),dim = "XYZ")
+line <- sf::st_linestring(rbind(point1,point2,point3))
+line2 <- rbind(c(2.2, 4.2), c(7.2, -25.1), c(9.26, -2.456))
+line2 <- sf::st_linestring(line2)
+poly <- sf::st_polygon(list(rbind(c(2.2, 4.2), c(7.2, -25.1), c(9.26, -2.456),c(2.2, 4.2))),dim = "XY")
+poly2 <- sf::st_polygon(list(rbind(c(-180, 90), c(-180, -90), c(180, -90), c(180, 90),c(-180, 90)),rbind(c(-170, 80), c(-170, -80), c(170, -80), c(170, 80),c(-170, 80))  ))
+world_exterior <- rbind(c(-180, 90), c(-180, -90), c(180, -90), c(180, 90),c(-180, 90))
+hole <- rbind(c(-170, 80), c(-170, -80), c(170, -80), c(170, 80),c(-170, 80))
+world <- sf::st_polygon(list(world_exterior,hole))
+```
+ 
+
+```{r}
+par(mfrow=c(1,4))
+ggplot() + geom_sf(data = point1) + ggtitle("Point")
+ggplot() + geom_sf(data = line) + ggtitle("Linestring")
+ggplot() + geom_sf(data = poly) + ggtitle("Polygon")
+ggplot() + geom_sf(data=world) + ggtitle("Outer polygon with hole")
+```
+ 
+
+* Geometry collection
+ 
+```{r}
+multi_point <- sf::st_multipoint(x = c(point1,point2,point3))
+line1 <- sf::st_linestring(c(point1,point2))
+line2 <- sf::st_linestring(c(point2,point3))
+multi_line <- sf::st_multilinestring(x = list(line1,line2))
+```
+
+```{r geom_collection}
+par(mfrow=c(1,2))
+ggplot()+geom_sf(data=multi_point) + ggtitle("Multipoint")
+ggplot()+geom_sf(data=multi_line) + ggtitle("Multilinestring")
+```
+
+* Convex hull
+ 
+```{r}
+ggplot()+geom_sf(data=sf::st_convex_hull(multi_point))
+```
+
+# Lesson 2
+ 
+**Learning goals:**
+
+* Read and write spatial data from/to common file formats
+* Conduct simple analysis on spatial and non-spatial data
+* Manage coordinate reference systems and re-project data
+
+## Read / write Shapefile
+```{r}
+shapedata <- sf::st_read("./Automating-GIS-processes/source/notebooks/L2/L2_data/NLS/2018/L4/L41/L4132R.shp/m_L4132R_p.shp")
+```
+Let’s check the first rows of data and column names:
+```{r}
+shapedata %>% dplyr::glimpse()
+```
+ 
+
+The column names are in Finnish then Let’s select only the useful columns and rename them into English:
+
+```{r}
+shapedata <- shapedata %>% dplyr::rename(GROUP=RYHMA, CLASS=LUOKKA) %>% dplyr::select(GROUP,CLASS)
+```
+Let's check:
+
+```{r}
+shapedata %>% glimpse()
+```
+Let’s try it out, and plot our GeoDataFrame:
+```{r}
+ggplot() + geom_sf(data = shapedata)
+```
+ 
+```{r}
+shapedata %>% head()
+```
+ 
+Get information about the area and create a new column that stores the areas of individual polygons:
+
+```{r}
+shapedata$area <- shapedata %>% sf::st_area() %>% round()
+```
+
+## Writing data into a shapefile
+
+Let’s first select one class (class number 36200, “Lake water”) from the data
+ 
+```{r}
+selection <- shapedata %>% dplyr::filter(CLASS==36200)
+```
+Check the selection:
+```{r}
+selection %>% ggplot()+geom_sf()
+```
+ 
+* Supported Drivers
+ 
+```{r}
+sf::st_drivers()
+```
+
+```{r}
+sf::st_write(obj = selection, dsn="Class_36200.shp")
+```
+
+```{r}
+basename <- "terrain"
+output_folder <- "output/"
+if (!dir.exists("output/")){
+  dir.create("output/")
+}
+for(class in unique(shapedata$CLASS)){
+  output_name = paste(output_folder,basename,"_",class,".shp",sep="")
+  # cat("saving file:", output_name)
+  sf::st_write(obj = shapedata %>% filter(CLASS==class), dsn=output_name)
+  }
+```
+
+## Map projections
+ 
+```{r}
+data <- sf::st_read("./Automating-GIS-processes/source/notebooks/L2/L2_data/Europe_borders.shp")
+```
+ 
+
+```{r}
+latitudes <- c(63.748023986816406, 62.90789794921875, 60.511383056640625, 60.44499588012695, 60.646385192871094, 60.243743896484375, 59.806800842285156, 59.91944122314453, 60.02395248413086, 60.14555358886719, 60.3452033996582, 60.211936950683594, 60.56249237060547, 61.54027557373047, 62.59798049926758, 63.02013397216797, 63.20353698730469, 63.27652359008789, 63.525691986083984, 64.79915618896484, 64.9533920288086, 65.51513671875, 65.65470886230469, 65.89610290527344, 65.79151916503906, 66.26332092285156, 66.80228424072266, 67.1570053100586, 67.4168701171875, 67.47978210449219, 67.94589233398438, 69.060302734375, 69.32611083984375, 68.71110534667969, 68.83248901367188, 68.580810546875, 68.98916625976562, 69.68568420410156, 69.9363784790039, 70.08860778808594, 69.70597076416016, 69.48533630371094, 68.90263366699219, 68.84700012207031, 68.53485107421875, 67.69471740722656, 66.90360260009766, 65.70887756347656, 65.6533203125, 64.92096710205078, 64.22373962402344, 63.748023986816406)
+
+longitudes <- c(29.996711730957, 31.5819625854492, 27.7380523681641, 26.5001354217529, 26.6523590087891, 25.9216632843018, 22.900276184082, 23.2572174072266, 23.335693359375, 22.8744430541992, 23.0846500396729, 22.5654735565186, 21.4527740478516, 21.6638870239258, 21.0659694671631, 21.6765956878662, 21.4968719482422, 22.3399982452393, 22.2881927490234, 24.5395812988281, 25.4442329406738, 25.3037490844727, 24.6691665649414, 24.6891632080078, 24.1749992370605, 23.6847190856934, 24.0007610321045, 
+23.5733299255371, 23.76513671875, 23.4308300018311, 23.6597900390625, 20.5809288024902, 21.3208312988281, 22.3983306884766, 23.9763870239258, 24.9349174499512, 25.7611083984375, 25.9593029022217, 26.4768047332764, 27.9106922149658, 29.1027774810791, 29.298469543457, 28.4355525970459, 28.8173580169678, 28.4598579406738, 30.0286102294922, 29.0751361846924, 30.1349277496338, 29.8188858032227, 29.6408309936523, 30.5773582458496, 29.996711730957)
+
+poly <- sf::st_polygon(x = list(cbind(longitudes,latitudes)),dim = "XY")
+```
+ 
+
+```{r}
+data <- sf::read_sf("./Automating-GIS-processes/source/exercises/exercise-2-ferdyndongo/Kruger_posts.shp")
+data %>% sf::st_crs()
+```
+ 
+```{r}
+data <- data %>% sf::st_transform(32735)
+data %>% sf::st_crs()
+```
+
+```{r}
+data %>% dplyr::group_by(userid) %>% dplyr::filter(userid==16301) %>%  dplyr::arrange(timestamp) %>% dplyr::group_split()
+data
+
+```
+ 
+
+# Lesson 3: PIP (Point In Polygon) and intersect queries
+
+Let’s create 2 point object and a polygon:
+
+```{r}
+p1 <- sf::st_point(x = c(24.952242, 60.1696017),dim = "XY")
+p2 <- sf::st_point(x = c(24.976567, 60.1612500),dim = "XY")
+poly <- sf::st_polygon(list(poly=rbind(c(24.950899, 60.169158), c(24.953492, 60.169158), c(24.953510, 60.170104), c(24.950958, 60.169990),c(24.950899, 60.169158))))
+```
+Let’s check if those points are within the polygon:
+
+```{r}
+poly %>% st_contains(p1)
+```
+ 
+```{r}
+p1 %>% sf::st_within(poly)
+```
+
+```{r}
+poly %>% st_contains(p2)
+```
+
+```{r}
+p2 %>% sf::st_within(poly)
+```
+
+## Intersect
+Let’s create two LineStrings:
+```{r}
+line_a <- st_linestring(rbind(c(0, 0), c(1, 1)))
+line_b <- st_linestring(rbind(c(1, 1), c(0, 2)))
+line_a %>% st_intersects(line_b)
+```
+Let’s see if they intersect
+```{r}
+# plot(line_a)
+# plot(line_b,add=T)
+ggplot()+ geom_sf(data = line_a)+geom_sf(data = line_b)
+```
+ 
+## Point in Polygon
+
+* Reading KML-files
+```{r}
+polys <- sf::st_read("./Automating-GIS-processes/source/notebooks/L3/data/PKS_suuralue.kml")
+southern <- sf::st_read("./Automating-GIS-processes/source/notebooks/L3/data/PKS_suuralue.kml") %>% filter(Name=='Eteläinen')
+data <- sf::st_read("./Automating-GIS-processes/source/notebooks/L3/data/addresses.shp")
+```
+ 
+```{r}
+ggplot()+geom_sf(data=polys,col="blue")+geom_sf(data=southern,col="red")+geom_sf(data=data)
+```
+
+```{r}
+data %>% dplyr::filter(st_within(x = data,y = southern,sparse = FALSE))
+```
+```{r}
+ggplot()+geom_sf(data=polys,col="blue")+geom_sf(data=southern,col="red")+geom_sf(data=data %>% dplyr::filter(st_within(x = data,y = southern,sparse = FALSE)))
+```
+ 
+```{r}
+intersections <- sf::st_read("./Automating-GIS-processes/source/notebooks/L3/data/uusimaa_intersections.gpkg")
+postcode_areas <- sf::st_read("./Automating-GIS-processes/source/notebooks/L3/data/uusimaa_postal_code_areas.gpkg")
+```
+ 
+```{r}
+ggplot()+geom_sf(data=postcode_areas)+geom_sf(data=intersections,color="yellow")
+```
+
+```{r}
+city_center_zip_area <- postcode_areas %>% dplyr::filter(posti_alue=='00100')
+final_selection <- intersections %>% dplyr::filter(intersections %>% st_intersects(city_center_zip_area,sparse = FALSE))
+```
+ 
+```{r}
+ggplot()+geom_sf(data=city_center_zip_area, color="red")+geom_sf(data=final_selection)
+```
+
+```{r}
+# sf::st_join(x = intersections, y = postcode_areas) %>% group_by(posti_alue) %>% dplyr::count()
+ 
+intersection_cnt <- sf::st_join(x = intersections, y = postcode_areas) %>% group_by(posti_alue) %>% dplyr::count() %>% dplyr::rename('intersection_cnt' = n)
+# postcode_areas <- sf::st_intersection(x = intersections, y = postcode_areas) %>% group_by(posti_alue) %>% dplyr::count() %>% dplyr::rename('intersection_cnt' = n) %>% sf::st_drop_geometry() %>% dplyr::inner_join(postcode_areas)
+
+# postcode_areas <- postcode_areas %>% dplyr::inner_join(sf::st_join(x = intersections, y = postcode_areas) %>% group_by(posti_alue) %>% dplyr::count() %>% dplyr::rename('intersection_cnt' = n) %>% sf::st_drop_geometry())
+postcode_areas <- postcode_areas %>% dplyr::inner_join(intersection_cnt %>% st_drop_geometry())
+# m2_to_km2_converter <- 1000000
+postcode_areas$area <- postcode_areas %>% st_area() %>% units::set_units("km^2")
+postcode_areas$intersection_density <- postcode_areas$intersection_cnt / postcode_areas$area
+```
+ 
+```{r}
+plot(postcode_areas['intersection_density'])
+```
+ 
+## Spatial join o spatial filter
+
+```{r}
+wfs_url <- 'https://kartta.hsy.fi/geoserver/wfs'
+httr::parse_url(wfs_url)
+```
+ 
+```{r}
+url <- httr::parse_url(wfs_url)
+url$query <- list(service = "WFS", version = "2.0.0", request = "GetCapabilities")
+httr::build_url(url = url)
+```
+
+```{r}
+url$query <- list(service = "WFS",
+                  version = "2.0.0",
+                  request = "GetFeature",
+                  typeName='asuminen_ja_maankaytto:Vaestotietoruudukko_2018',
+                  outputFormat='json'
+                  )
+ 
+httr::build_url(url = url)
+```
+ 
+```{r}
+r <- httr::build_url(url = url)
+pop <- read_sf(r)
+pop %>% head()
+```
+
+```{r}
+pop <- pop %>% dplyr::rename('pop18'=asukkaita) %>% dplyr::select(pop18)
+pop %>% head()
+```
+ 
+```{r}
+plot(pop)
+```
+
+## Join the layers
+ 
+
+```{r}
+addresses <- read_sf("./Automating-GIS-processes/source/notebooks/L3/data/addresses.shp")
+addresses <- addresses %>% sf::st_transform(3879)
+```
+ 
+```{r}
+addresses %>% st_join(pop,join = st_intersects, left=F) %>% dplyr::select(addr,pop18)
+```
+ 
+
+```{r}
+addresses %>% st_join(pop,join = st_intersects, left=T) %>% dplyr::select(addr,pop18)
+```
+
+```{r}
+addresses %>% st_join(pop,join = st_within, left=T) %>% dplyr::select(addr,pop18)
+```
+
+```{r}
+addresses %>% st_join(pop,join = st_within, left=F) %>% dplyr::select(addr,pop18)
+```
+ 
+
+```{r}
+ggplot()+geom_sf(data = pop,aes(fill=pop18)) +geom_sf(data=addresses,colour="red")
+```
+ 
+```{r}
+join <- addresses %>% st_join(pop,join = st_within, left=F) %>% dplyr::select(addr,pop18)
+```
+ 
+
+```{r}
+ggplot()+geom_sf(data = pop,aes(fill=pop18)) +geom_sf(data=join,colour="red")
+```
+ 
+```{r}
+ows4R::WFSClient$new(url = wfs_url,serviceVersion = "2.0.0")
+```
+
+```{r}
+client  <- ows4R::WFSClient$new(url = wfs_url,serviceVersion = "2.0.0")
+```
+
+```{r}
+client$getFeatureTypes(pretty = TRUE)
+```
+
+```{r}
+client$getCapabilities()$findFeatureTypeByName("asuminen_ja_maankaytto:1000m_verkostobufferi")$getDescription() %>% map_chr(function(x){x$getName()})
+```
+ 
+```{r}
+client$getCapabilities()$getOperationsMetadata()$getOperations() %>% 
+     purrr::map_chr(function(x){
+         x$getName()
+     })
+```
+
+```{r}
+client$getCapabilities()$getOperationsMetadata()$getOperations() %>% 
+     purrr::map(function(x){
+         x$getParameters()
+     })
+```
+ 
+```{r}
+client$getCapabilities()$ getFeatureTypes() %>%  
+  map(function(x){x$getBoundingBox()})
+```
+ 
+```{r}
+client$getCapabilities()$ getFeatureTypes() %>%  
+  map_chr(function(x){x$getAbstract()})
+```
+ 
+```{r}
+wfs_url <- 'https://kartta.hsy.fi/geoserver/wfs'
+httr::parse_url(wfs_url)
+```
+ 
+```{python python.reticulate = FALSE}
+import requests
+from pyproj import CRS
+import geopandas as gpd
+import geojson
+url = 'https://kartta.hsy.fi/geoserver/wfs'
+# Specify parameters (read data in json format). 
+# Available feature types in this particular data source: 
+# http://geo.stat.fi/geoserver/vaestoruutu/wfs?service=wfs&version=2.0.0&request=describeFeatureType
+
+params = dict(service='WFS', 
+              version='2.0.0', 
+              request='GetFeature', 
+              typeName='asuminen_ja_maankaytto:Vaestotietoruudukko_2018', 
+              outputFormat='json')
+# Fetch data from WFS using requests
+r = requests.get(url, params=params)
+# Create GeoDataFrame from geojson
+pop = gpd.GeoDataFrame.from_features(geojson.loads(r.content))
+```
+
+```{python python.reticulate = FALSE}
+pop.head()
+```
+
+
+## Nearest neighbour analysis
+One commonly used GIS task is to be able to find the nearest neighbour for an object or a set of objects. For instance, you might have a single Point object representing your home location, and then another set of locations representing e.g. public transport stops. Then, quite typical question is “which of the stops is closest one to my home?” This is a typical nearest neighbour analysis, where the aim is to find the closest geometry to another geometry.
+
+```{r}
+orig <- sf::st_point(x = c(1, 1.67), dim = "XY")
+dest1 <- sf::st_point(x = c(0, 1.45), dim = "XY")
+dest2 <- sf::st_point(x = c(2, 2), dim = "XY")
+dest3 <- sf::st_point(x = c(0, 2.5), dim = "XY")
+destinations <- sf::st_multipoint(c(dest1,dest2,dest3))
+# sf::st_nearest_feature(x = orig,y = destinations) # the index of the nearest feature
+```
+
+```{r}
+nearest_geoms <- sf::st_nearest_points(orig, destinations)
+nearest_geoms
+```
+
+```{r}
+ggplot()+geom_sf(data=orig,colour="blue")+geom_sf(data=destinations,colour="red")+geom_sf(data=nearest_geoms,colour="green")
+```
+ 
+```{r}
+destinations[sf::st_nearest_feature(orig,destinations),]
+```
+ 
+```{r}
+df2 <- read_sf("./Automating-GIS-processes/source/notebooks/L3/data/addresses.shp")
+df1 <- read_sf("./Automating-GIS-processes/source/notebooks/L3/data/PKS_suuralue.kml")
+```
+
+```{r}
+df1$centroid <-  st_geometry(df1) %>% st_centroid()
+df1 <- st_set_geometry(df1,'centroid') # activate centroid as active geometry
+df1 %>% st_nearest_points(st_union(df2))
+```
+
+```{r}
+df1 %>% st_nearest_points(st_union(df2))
+```
+ 
+```{r}
+df1 %>% st_nearest_feature(df2)
+```
+
+```{r}
+ggplot()+geom_sf(data=df1,colour="green")+geom_sf(data=df2,colour="red")+geom_sf(data=df1 %>% st_nearest_points(st_union(df2)))
+```
+
+```{r}
+st_nearest_feature(df1[2,],df2)
+```
+
+```{r}
+st_nearest_points(df1[2,],st_union(df2))
+```
+
+```{r}
+st_nearest_points(df1[2,],df2)
+```
+
+ 
+```{r}
+ggplot()+geom_sf(data=df1[1,],colour="green")+geom_sf(data=df2,colour="red")+geom_sf(data=df1[1,] %>% st_nearest_points(st_union(df2)),colour="blue")
+```
+ 
+
+```{r}
+df2 %>% dplyr::slice(df1 %>% st_nearest_feature(df2)) %>% dplyr::select(id, addr)
+```
+ 
+
+```{r}
+df1$nearest_point <- df1 %>% sf::st_nearest_points(sf::st_union(df2))
+df1
+```
+ 
+
+```{r}
+buildings <- read_sf(unzip("./Automating-GIS-processes/source/notebooks/L3/data/building_points_helsinki.zip"))
+stops <- read_sf("./Automating-GIS-processes/source/notebooks/L3/data/pt_stops_helsinki.gpkg")
+closest_stops <- buildings %>% sf::st_nearest_points(st_union(stops))
+```
+```{r}
+par(mfrow=c(1,3))
+buildings %>% ggplot()+geom_sf()+ggtitle("Buildings")
+stops %>% ggplot()+geom_sf()+ggtitle("Stops")
+closest_stops %>% ggplot()+geom_sf()+ggtitle("Closest Stops")
+```
+ 
+```{r}
+buildings_closest_stops <- buildings %>% dplyr::bind_cols(stops %>% dplyr::slice(buildings %>% st_nearest_feature(stops)))
+buildings_closest_stops <- buildings_closest_stops %>% dplyr::rename('building_centroid'=geom...2,'closest_stop'=geom...7)
+buildings_closest_stops <- buildings_closest_stops %>% st_as_sf()
+```
+ 
+
+```{r}
+buildings_closest_stops$distance <- st_geometry(buildings_closest_stops) %>% st_distance(st_geometry(st_set_geometry(buildings_closest_stops,'closest_stop')),by_element = T)
+buildings_closest_stops$linestring <- closest_stops
+```
+ 
+
+```{r fig.width=10}
+ggplot()+geom_sf(data=st_set_geometry(buildings_closest_stops,'closest_stop'),colour="red")+geom_sf(data=buildings_closest_stops,colour="yellow")+geom_sf(data=st_set_geometry(buildings_closest_stops,'linestring'),colour="green")
+ 
+
+```
+ 
+
+## Exercise 3 of Autogis process with python (with R code)
+ 
+
+```{r}
+geodata <- sf::st_read('./Automating-GIS-processes/source/exercises/exercise-3-ferdyndongo/shopping_centers.shp')
+geodata$buffer <- geodata %>% sf::st_buffer(dist = 1500) %>% sf::st_geometry()
+```
+
+```{r}
+geodata$area <- geodata %>% st_set_geometry(value = 'buffer') %>% st_area() %>% units::set_units(value = 'km2')
+geodata <- geodata %>% st_set_geometry(value = 'buffer')
+```
+
+```{r}
+wfs_url <- 'https://kartta.hsy.fi/geoserver/wfs'
+url <- httr::parse_url(wfs_url)
+url$query <- list(service = "WFS",
+                   version = "2.0.0",
+                   request = "GetFeature",
+                   typeName='asuminen_ja_maankaytto:Vaestotietoruudukko_2018',
+                   outputFormat='json'
+                  )
+ 
+r <- httr::build_url(url = url)
+pop <- read_sf(r)
+pop <- pop %>% dplyr::rename('pop18'=asukkaita) %>% dplyr::select(pop18)
+```
+
+```{r}
+ggplot()+geom_sf(data=geodata,colour="lightgreen")+geom_sf(data=st_set_geometry(x = geodata,value = 'geometry'),colour="red")
+```
+
+```{r}
+ggplot()+geom_sf(data=geodata,colour="red")+geom_sf(data=st_set_geometry(x = geodata,value = 'geometry'),colour="red")+geom_sf(data=pop)
+```
+ 
+
+```{r}
+geodata %>% st_join(y = pop,join = st_contains) %>% dplyr::group_by(id) %>% dplyr::summarise(pop=sum(pop18))
+```
+ 
+
+```{r}
+ggplot()+geom_sf(data=pop %>% st_join(y = geodata, join = st_within,left=F))+ geom_sf(data=geodata %>% st_join(y = pop,join = st_contains),colour="red")
+ 
+```
+ 
+```{r include=FALSE}
+geodata <- geodata %>%  dplyr::rename( geometry=buffer, shopping_center = geometry) %>% st_set_geometry(value = 'geometry')
+ 
+```
+ 
+
+ 
+## Geometric operation: overlay analysis
+ 
+```{r}
+
+hel <- st_read('./Automating-GIS-processes/source/notebooks/L4/data/Helsinki_borders.shp')
+ 
+grid <- st_read('./Automating-GIS-processes/source/notebooks/L4/data/TravelTimes_to_5975375_RailwayStation.shp')
+```
+ 
+```{r echo=FALSE, include=TRUE, warning=FALSE}
+ggplot()+geom_sf(data=grid)+geom_sf(data=hel)
+```
+
+```{r}
+# grid %>% dplyr::filter(grid %>% st_intersects(y = hel,sparse = F))
+intersection <- grid %>% st_join(y = hel, join = st_intersects,left=F)
+```
+ 
+```{r}
+ggplot()+geom_sf(data=intersection)
+```
+ 
+
+```{r echo=FALSE}
+st_write(obj = intersection,dsn = 'intersection.geojson')
+```
+
+* Aggregating data
+ 
+```{r}
+dissolved <- intersection %>% dplyr::group_by(car_r_t) %>% summarise()
+selection <- dissolved %>% dplyr::filter(car_r_t==15)
+```
+ 
+
+```{r}
+ggplot()+geom_sf(data=dissolved)+geom_sf(data=selection,colour="red")
+```
+ 
+* Simplify geometry
+ 
+
+```{r}
+amazon_river <- st_read('./Automating-GIS-processes/source/notebooks/L4/data/Amazon_river.shp')
+```
+ 
+
+```{r}
+ggplot()+geom_sf(data=amazon_river)
+```
+ 
+
+```{r}
+ggplot()+geom_sf(data = st_simplify(amazon_river))
+```
+ 
+
+## Data reclassification
+ 
+```{r}
+acc <- st_read('./Automating-GIS-processes/source/notebooks/L4/data/TravelTimes_to_5975375_RailwayStation_Helsinki.geojson')
+acc <- acc %>% dplyr::select(pt_r_tt,walk_d) %>% dplyr::filter(pt_r_tt >= 0)
+```
+ 
+
+```{r}
+tm_shape(acc)+tmap::tm_fill('pt_r_tt')
+```
+ 
+
+```{r}
+ggplot(data=acc) + geom_sf(aes(fill=cut(pt_r_tt,classInt::classIntervals(acc$pt_r_tt,n = 9,style = 'quantile')$brks)))+scale_fill_brewer(palette = 'RdYlBu',name='times -> center')
+```
+ 
+
+```{r}
+ggplot() + geom_sf(data=acc,aes(fill=pt_r_tt %>% cut_to_classes(n = 9,style = 'jenks'))) + scale_fill_brewer(palette= 'RdYlBu',name='travel times')
+```
+ 
+
+```{r}
+ggplot(data=acc) + geom_sf(aes(fill=cut(walk_d,classInt::classIntervals(acc$walk_d,n = 9,style = 'quantile')$brks)))+scale_fill_brewer(palette = 'RdYlBu',name='walking distance')
+```
+ 
+
+```{r echo=FALSE}
+ggplot() + geom_sf(data=acc,aes(fill= walk_d %>% cut_to_classes(n = 9,style = 'jenks'))) + scale_fill_brewer(palette= 'RdYlBu',name='walking distances')
+```
+ 
+
+* with fisher
+ 
+```{r}
+ggplot() + geom_sf(data=acc,aes(fill= walk_d %>% cut_to_classes(n = 9,style = 'fisher'))) + scale_fill_brewer(palette= 'RdYlBu',name='walking distances')
+```
+ 
+* with tmap packages
+```{r}
+tm_shape(acc)+tmap::tm_fill('walk_d')
+```
+```{r}
+tm_shape(acc)+tmap::tm_fill('walk_d',midpoint = NA)
+```
+ 
+ 
+```{r echo=FALSE}
+acc$nb_pt_r_tt <-  cut_to_classes(x = acc$pt_r_tt, n = 9,style = 'jenks')
+```
+ 
+```{r echo=FALSE}
+ggplot(data = acc) + geom_sf(aes(fill=nb_pt_r_tt))
+```
+ 
+# AutoGis Processing: exercise 4
+ 
+```{r}
+grid <- st_read('./Automating-GIS-processes/source/exercises/exercise-4-ferdyndongo/data/MetropAccess_YKR_grid_EurefFIN.shp')
+TravelTimes_to_Itis <- read.csv("./Automating-GIS-processes/source/exercises/exercise-4-ferdyndongo/data/TravelTimes_to_5944003_Itis.txt", sep=";") %>% dplyr::select(pt_r_t, car_r_t, from_id, to_id)
+geodata <- grid %>% dplyr::inner_join(y = TravelTimes_to_Itis,by=c('YKR_ID'='from_id'))
+geodata <- geodata %>% dplyr::filter( pt_r_t != -1 )
+```
+ 
+
+```{r echo=FALSE}
+geodata <- geodata %>% dplyr::mutate(pt_r_t_cl=findInterval(x = geodata$pt_r_t,vec = c(5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60)))
+geodata <- geodata %>% dplyr::mutate(car_r_t_cl=findInterval(x = geodata$car_r_t,vec = c(5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60)))
+```
+ 
+```{r echo=FALSE, warning=FALSE, fig.asp=0.5, fig.width=5,fig.align='center'}
+par(mfrow=c(1,2))
+ggplot(data = geodata) + geom_sf(aes(fill=pt_r_t_cl)) + scale_color_brewer(palette= 'RdYlBu')
+ggplot(data = geodata) + geom_sf(aes(fill=car_r_t_cl)) + scale_color_brewer(palette= 'RdYlBu')
+```
+
+```{r echo=FALSE}
+dir_name <- './Automating-GIS-processes/source/exercises/exercise-4-ferdyndongo/data/'
+files <- list.files(path = dir_name,pattern = '*.txt')
+for (f in files){
+    center_name <- str_split(string = f,pattern = '_')[[1]][4] %>% str_replace(pattern = '.txt',replacement = '')
+    data <- read.csv(file =paste(dir_name,f, sep = ''),sep = ';') %>% dplyr::select(from_id,pt_r_t)
+    names(data)[names(data)=='pt_r_t'] <- paste('pt_r_t',center_name,sep='_')
+    if (! exists('travel_time')){
+      travel_time <- data
+    }else{
+      travel_time <- travel_time %>% dplyr::inner_join(data,by='from_id')
+    }
+    rm(data)
+}
+# travel_time %>% dplyr::rowwise() %>% dplyr::mutate( min_t=min(pt_r_t_Jumbo, pt_r_t_Dixi, pt_r_t_Myyrmanni, pt_r_t_Itis, pt_r_t_Forum, pt_r_t_IsoOmena, pt_r_t_Ruoholahti))
+# data %>% dplyr::rowwise() %>% dplyr::mutate( min_t=min(pt_r_t_Jumbo, pt_r_t_Dixi, pt_r_t_Myyrmanni, pt_r_t_Itis, pt_r_t_Forum, pt_r_t_IsoOmena, pt_r_t_Ruoholahti))
+travel_time <- travel_time[which(!travel_time==-1),]
+travel_time$min_t <- apply(travel_time, 1, min)
+travel_time$dominant_service <- apply(travel_time, 1, which.min)
+data <- grid %>% dplyr::inner_join(travel_time, by=c('YKR_ID'='from_id'))
+```
+ 
+```{r echo=FALSE}
+par(mfrow=c(1,2))
+ggplot(data) + geom_sf(aes(fill=dominant_service))+scale_color_discrete(palette= 'RdYlBu',name='dominant service')
+ggplot(data) + geom_sf(aes(fill=min_t))+scale_color_discrete(palette= 'RdYlBu',name='travel time')
+```
+ 
+```{r}
+dir_name <- './Automating-GIS-processes/source/exercises/exercise-4-ferdyndongo/data/'
+files <- list.files(path = dir_name,pattern = '*.txt')
+for (f in files){
+    center_name <- str_split(string = f,pattern = '_')[[1]][4] %>% str_replace(pattern = '.txt',replacement = '')
+    data <- read.csv(file =paste(dir_name,f, sep = ''),sep = ';') %>% dplyr::select(from_id,pt_r_t)
+    names(data)[which(names(data)=='from_id')] <- 'YKR_ID'
+    names(data)[names(data)=='pt_r_t'] <- paste('pt_r_t',center_name,sep='_')
+    grid <-grid %>% dplyr::inner_join(data,by='YKR_ID')
+}
+grid <- grid %>% dplyr::filter(pt_r_t_Jumbo != -1)
+# grid <- grid %>% dplyr::rowwise() %>% dplyr::mutate( min_t=min(pt_r_t_Jumbo, pt_r_t_Dixi, pt_r_t_Myyrmanni, pt_r_t_Itis, pt_r_t_Forum, pt_r_t_IsoOmena, pt_r_t_Ruoholahti))
+grid <- grid %>% dplyr::bind_cols(grid %>% dplyr::rowwise() %>% transmute( min_t=min(pt_r_t_Jumbo, pt_r_t_Dixi, pt_r_t_Myyrmanni, pt_r_t_Itis, pt_r_t_Forum, pt_r_t_IsoOmena, pt_r_t_Ruoholahti)))
+ 
+grid$dominant_service <- colnames(grid[,c('pt_r_t_Jumbo', 'pt_r_t_Dixi', 'pt_r_t_Myyrmanni', 'pt_r_t_Itis', 'pt_r_t_Forum', 'pt_r_t_IsoOmena', 'pt_r_t_Ruoholahti')])[apply(grid[,c('pt_r_t_Jumbo', 'pt_r_t_Dixi', 'pt_r_t_Myyrmanni', 'pt_r_t_Itis', 'pt_r_t_Forum', 'pt_r_t_IsoOmena', 'pt_r_t_Ruoholahti')],1,which.min)]
+ 
+grid$dominant_service_idx <- apply(grid[,c('pt_r_t_Jumbo', 'pt_r_t_Dixi', 'pt_r_t_Myyrmanni', 'pt_r_t_Itis', 'pt_r_t_Forum', 'pt_r_t_IsoOmena', 'pt_r_t_Ruoholahti')],1,which.min)
+ 
+```
+ 
+
+```{r echo=FALSE}
+par(mfrow=c(1,2))
+ggplot(grid) + geom_sf(aes(fill=dominant_service))+scale_color_discrete(palette= 'RdYlBu',name='dominant service')
+ 
+ggplot(grid) + geom_sf(aes(fill=min_t))+scale_color_discrete(palette= 'RdYlBu',name='travel time')
+```
+ 
+
+## AutoGis processing with R and QGis (lesson 7)
+ 
+
+```{r}
+wfs_url <- 'http://kartta.hel.fi/ws/geoserver/avoindata/wfs'
+client <- ows4R::WFSClient$new(url = wfs_url,serviceVersion = "2.0.0")
+```
+ 
+```{r}
+client$getFeatureTypes(pretty = TRUE) %>% head()
+```
+ 
+```{r}
+client$getCapabilities()
+```
+ 
+```{r}
+client$getCapabilities()$findFeatureTypeByName('Seutukartta_liikenne_metro_rata')
+```
+
+```{r}
+client$getCapabilities()$findFeatureTypeByName('Seutukartta_liikenne_metro_rata')$getDescription(pretty=FALSE)
+```
+ 
+```{r}
+client$getCapabilities()$findFeatureTypeByName('Seutukartta_liikenne_metro_rata')$getDescription(pretty=FALSE) %>% map_chr(function(x){x$getName()})
+```
+ 
+```{r}
+client$getCapabilities()$getOperationsMetadata()
+```
+
+```{r}
+client$getCapabilities()$getOperationsMetadata()$getOperations()
+```
+
+```{r}
+client$getCapabilities()$getOperationsMetadata()$getOperations() %>% map_chr(function(x){x$getName()})
+```
+ 
+```{r}
+client$getCapabilities()$getOperationsMetadata()$getOperations() %>% purrr::map(function(x){x$getParameters()})
+```
+ 
+```{r}
+url <- httr::parse_url(wfs_url)
+url$query <- list(service = "WFS",
+                   version = "2.0.0",
+                   request = "GetFeature",
+                   typeName='Seutukartta_liikenne_metro_rata',
+                   outputFormat='json'
+                  )
+r <- httr::build_url(url = url)
+r
+```
+ 
+```{r}
+metro_data <- sf::read_sf(r)
+```
+ 
+```{r}
+ggplot()+geom_sf(data = metro_data)
+```
+ 
