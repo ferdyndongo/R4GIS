@@ -1,5 +1,5 @@
 # About
-This R notebook is intended to be the R code of the course Automating GIS-processes (https://autogis-site.readthedocs.io/en/latest/index.html).    
+This R notebook is intended to be the R code of the course Automating GIS-processes ([https://autogis-site.readthedocs.io/en/latest/index.html](https://autogis-site.readthedocs.io/en/2020_/)).    
 The data are available in the web site of the course.
 
 # Description
